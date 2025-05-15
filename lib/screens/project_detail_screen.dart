@@ -3,7 +3,7 @@ import '../models/project_model.dart';
 import '../models/task_model.dart';
 
 class ProjectDetailScreen extends StatefulWidget {
-  final Project project; // 表示するプロジェクトを受け取る
+  final Project project;
 
   const ProjectDetailScreen({super.key, required this.project});
 
@@ -12,142 +12,353 @@ class ProjectDetailScreen extends StatefulWidget {
 }
 
 class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
-  late List<Task> _tasks; // プロジェクト内のタスクリストを保持
-  final TextEditingController _taskController = TextEditingController(); // タスク追加用
+  late String _projectTitle;
+  late List<Task> _tasks;
+  late List<TextEditingController> _taskTextControllers;
+  late List<FocusNode> _taskFocusNodes;
 
   @override
   void initState() {
     super.initState();
-    // 受け取ったプロジェクトのタスクリストのコピーを状態として持つ
-    // これにより、この画面内でタスクを変更しても元のプロジェクトオブジェクトに直接影響しない
-    // (戻る時に変更後のプロジェクトを渡すことで更新を反映する)
-    _tasks = List<Task>.from(widget.project.tasks);
+    _projectTitle = widget.project.title;
+    // widget.project.tasks のディープコピーを作成
+    _tasks = widget.project.tasks.map((task) => Task(
+        id: task.id,
+        title: task.title,
+        isDone: task.isDone,
+        createdAt: task.createdAt
+    )).toList();
+
+
+    _taskTextControllers = [];
+    _taskFocusNodes = [];
+
+    if (_tasks.isEmpty) {
+      _addEmptyTaskToList(requestFocus: true);
+    } else {
+      for (var task in _tasks) {
+        final controller = TextEditingController(text: task.title);
+        final focusNode = FocusNode();
+        _taskTextControllers.add(controller);
+        _taskFocusNodes.add(focusNode);
+        _addFocusListener(focusNode, controller, task.id);
+      }
+    }
   }
 
-  // タスクの完了状態を切り替える
-  void _toggleTaskDone(int index) {
-    setState(() {
-      _tasks[index].isDone = !_tasks[index].isDone;
+  void _addFocusListener(FocusNode focusNode, TextEditingController controller, String taskId) {
+    focusNode.addListener(() {
+      if (!focusNode.hasFocus && mounted) {
+        final taskIndex = _tasks.indexWhere((t) => t.id == taskId);
+        if (taskIndex != -1) {
+          final newTitle = controller.text.trim();
+          // タイトルが実際に変更された場合のみsetStateを呼ぶ
+          if (_tasks[taskIndex].title != newTitle) {
+            setState(() {
+              _tasks[taskIndex].title = newTitle;
+            });
+          }
+          // フォーカスが外れたときに空のタスクを削除するロジック（最後の1つは除く）
+          if (newTitle.isEmpty && _tasks.length > 1) {
+            // 少し遅延させて削除（他の操作と競合しないように）
+            Future.delayed(Duration.zero, () {
+              if(mounted) _deleteTaskAt(taskIndex, moveFocus: false);
+            });
+          }
+        }
+      }
     });
   }
 
-  // 新しいタスクを追加する
-  void _addTask(String title) {
-    if (title.trim().isEmpty) return; // 空のタスクは追加しない
-
+  void _addEmptyTaskToList({String initialText = '', bool requestFocus = false, int? insertAtIndex}) {
+    final newTaskId = DateTime.now().millisecondsSinceEpoch.toString();
     final newTask = Task(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      title: title.trim(),
+      id: newTaskId,
+      title: initialText.trim(),
       createdAt: DateTime.now(),
     );
-    setState(() {
-      _tasks.add(newTask);
-    });
-    _taskController.clear(); // 入力フィールドをクリア
-  }
+    final newController = TextEditingController(text: newTask.title);
+    final newFocusNode = FocusNode();
 
-  // 画面を閉じる前に、変更を元のプロジェクトに反映させる準備
-  Project _getUpdatedProject() {
-    // widget.project (元のプロジェクト) の tasks を現在の _tasks で更新した新しい Project インスタンスを作成
-    // もしくは、元の project オブジェクトの tasks プロパティを直接書き換えることもできるが、
-    // 不変性を保つ方が推奨される場合もある。ここでは新しいインスタンスを返すアプローチ。
-    return Project(
-      id: widget.project.id,
-      title: widget.project.title, // タイトルはここでは変更しない
-      tasks: _tasks, // 更新されたタスクリスト
-      createdAt: widget.project.createdAt,
-      isArchived: widget.project.isArchived, // アーカイブ状態もここでは変更しない
-    );
+    _addFocusListener(newFocusNode, newController, newTaskId);
+
+    if (mounted) {
+      setState(() {
+        if (insertAtIndex != null && insertAtIndex <= _tasks.length) { // <= に変更
+          _tasks.insert(insertAtIndex, newTask);
+          _taskTextControllers.insert(insertAtIndex, newController);
+          _taskFocusNodes.insert(insertAtIndex, newFocusNode);
+        } else {
+          _tasks.add(newTask);
+          _taskTextControllers.add(newController);
+          _taskFocusNodes.add(newFocusNode);
+        }
+      });
+
+      if (requestFocus) {
+        Future.delayed(const Duration(milliseconds: 50), () {
+          if (mounted) {
+            newFocusNode.requestFocus();
+          }
+        });
+      }
+    }
   }
 
   @override
+  void dispose() {
+    for (var controller in _taskTextControllers) {
+      controller.dispose();
+    }
+    for (var focusNode in _taskFocusNodes) {
+      focusNode.dispose();
+    }
+    super.dispose();
+  }
+
+  void _toggleTaskDone(int index) {
+    if (mounted && index < _tasks.length) {
+      setState(() {
+        _tasks[index].isDone = !_tasks[index].isDone;
+      });
+      _checkAndPromptArchive();
+    }
+  }
+
+  void _insertNewTaskAt(int index, {String initialText = ''}) {
+    _addEmptyTaskToList(initialText: initialText, requestFocus: true, insertAtIndex: index);
+    // _checkAndPromptArchive(); // 新しいタスク追加時は通常未完了なので、アーカイブチェックは不要か、あるいは条件付きで
+  }
+
+  void _deleteTaskAt(int index, {bool moveFocus = true}) {
+    if (mounted && index < _tasks.length) {
+      // フォーカスを安全な場所に移す
+      if (moveFocus && _taskFocusNodes.isNotEmpty && index < _taskFocusNodes.length && _taskFocusNodes[index].hasFocus) {
+        if (index > 0 && index -1 < _taskFocusNodes.length) {
+          _taskFocusNodes[index - 1].requestFocus();
+        } else if (_tasks.length > 1 && index + 1 < _taskFocusNodes.length) {
+          _taskFocusNodes[index + 1].requestFocus();
+        }
+      }
+
+      // 削除前にコントローラーとフォーカスノードを破棄
+      _taskTextControllers[index].dispose();
+      _taskFocusNodes[index].dispose();
+
+      setState(() {
+        _tasks.removeAt(index);
+        _taskTextControllers.removeAt(index);
+        _taskFocusNodes.removeAt(index);
+
+        if (_tasks.isEmpty) {
+          _addEmptyTaskToList(requestFocus: true);
+        }
+      });
+      _checkAndPromptArchive();
+    }
+  }
+
+  Project _getUpdatedProject({bool archiving = false}) {
+    List<Task> finalTasks = [];
+    for (int i = 0; i < _tasks.length; i++) {
+      if (i < _taskTextControllers.length) {
+        final currentText = _taskTextControllers[i].text.replaceAll(RegExp(r'\n+$'), '').trim();
+        // 最後の1タスクで、かつそれが空の場合でも、isDoneの状態は保持したいので、タイトルが空でも追加。
+        // ただし、完全に不要ならここでフィルタリングする。
+        // ここでは、UI上存在するものは（タイトルが空でも）一旦そのまま返す方針。
+        // 保存時に最終的に空タスクをどう扱うかは永続化の層で決めても良い。
+        _tasks[i].title = currentText;
+        finalTasks.add(_tasks[i]);
+
+      }
+    }
+    return Project(
+      id: widget.project.id,
+      title: _projectTitle,
+      tasks: finalTasks,
+      createdAt: widget.project.createdAt,
+      isArchived: archiving || widget.project.isArchived, // アーカイブ実行時または既存のアーカイブ状態
+    );
+  }
+
+  void _checkAndPromptArchive() {
+    if (!mounted || _tasks.isEmpty) return;
+
+    bool allTasksDone = _tasks.every((task) => task.isDone);
+
+    if (allTasksDone) {
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (mounted) {
+          _showArchiveDialog();
+        }
+      });
+    }
+  }
+
+  void _showArchiveDialog() {
+    showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('プロジェクト完了！'),
+          content: const Text('全てのタスクが完了しました。\nこのプロジェクトをアーカイブしますか？'),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('いいえ'),
+              onPressed: () {
+                Navigator.of(dialogContext).pop(false);
+                if (mounted) {
+                  bool focusedOnEmptyTask = false;
+                  if (_tasks.isNotEmpty) {
+                    for (int i = 0; i < _tasks.length; i++) {
+                      if (i < _taskTextControllers.length && _taskTextControllers[i].text.trim().isEmpty) {
+                        if (i < _taskFocusNodes.length) _taskFocusNodes[i].requestFocus();
+                        focusedOnEmptyTask = true;
+                        break;
+                      }
+                    }
+                  }
+                  if (!focusedOnEmptyTask) {
+                    _insertNewTaskAt(_tasks.length);
+                  }
+                }
+              },
+            ),
+            TextButton(
+              child: const Text('はい、アーカイブする'),
+              onPressed: () {
+                Navigator.of(dialogContext).pop(true);
+                // _archiveProject(); // _archiveProjectはここで呼ばず、pop(true)の結果で処理する
+              },
+            ),
+          ],
+        );
+      },
+    ).then((confirmArchive) { // ダイアログが閉じた後の処理
+      if (confirmArchive == true) {
+        _archiveProjectAndPop();
+      }
+    });
+  }
+
+  void _archiveProjectAndPop() {
+    if (mounted) {
+      // _getUpdatedProjectを呼び出す際にarchivingをtrueにして、アーカイブ状態のプロジェクトを取得
+      final projectToArchive = _getUpdatedProject(archiving: true);
+      Navigator.of(context).pop(projectToArchive);
+    }
+  }
+
+
+  @override
   Widget build(BuildContext context) {
-    return PopScope( // Flutter 3.20 以降で推奨される戻るボタンの制御方法
-      canPop: false, // 通常の戻る操作を一旦無効化
+    return PopScope(
+      canPop: false,
       onPopInvoked: (didPop) {
-        if (didPop) return; // システムによって既にpopされた場合は何もしない
-        // 変更されたプロジェクトを返して画面を閉じる
-        Navigator.of(context).pop(_getUpdatedProject());
+        if (didPop) return;
+        // 通常の戻る操作では、アーカイブせずに現在の状態でプロジェクトを返す
+        Navigator.of(context).pop(_getUpdatedProject(archiving: false));
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(widget.project.title), // プロジェクトのタイトルを表示
-          // leading: IconButton( // PopScope を使う場合は、leadingのカスタマイズがより明確になる
-          //   icon: Icon(Icons.arrow_back),
-          //   onPressed: () {
-          //     Navigator.of(context).pop(_getUpdatedProject());
-          //   },
-          // ),
+          title: Text(_projectTitle),
         ),
         body: Column(
           children: [
-            // タスクリスト表示部分
             Expanded(
-              child: _tasks.isEmpty
-                  ? const Center(
-                child: Text(
-                  'タスクはありません。\n下の入力欄から追加しましょう！',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 18, color: Colors.grey),
-                ),
-              )
-                  : ListView.builder(
+              child: ReorderableListView.builder( // タスクの並び替えを可能にする (オプション)
                 itemCount: _tasks.length,
                 itemBuilder: (context, index) {
+                  // Keyの指定がReorderableListViewには必須
+                  // ValueKey以外にもObjectKey(task)なども使える
+                  final taskKey = ValueKey(_tasks[index].id + _tasks[index].title); // Keyはタスクごとに一意に
+
+                  if (index >= _tasks.length || index >= _taskTextControllers.length || index >= _taskFocusNodes.length) {
+                    return SizedBox.shrink(key: ValueKey('empty_shrink_$index'));
+                  }
                   final task = _tasks[index];
-                  return CheckboxListTile(
-                    title: Text(
-                      task.title,
+                  final controller = _taskTextControllers[index];
+
+                  return ListTile( // ReorderableListViewの子は通常ListTileなどが使われる
+                    key: taskKey,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 0.0),
+                    leading: Checkbox(
+                      value: task.isDone,
+                      onChanged: (bool? value) {
+                        _toggleTaskDone(index);
+                      },
+                      activeColor: Theme.of(context).colorScheme.secondary,
+                    ),
+                    title: TextField(
+                      controller: controller,
+                      focusNode: _taskFocusNodes[index],
+                      decoration: InputDecoration(
+                        hintText: 'タスクを入力...',
+                        border: InputBorder.none,
+                        hintStyle: TextStyle(color: Colors.grey.withOpacity(0.8)),
+                      ),
                       style: TextStyle(
                         decoration: task.isDone
-                            ? TextDecoration.lineThrough // 完了なら取り消し線
+                            ? TextDecoration.lineThrough
                             : null,
-                        color: task.isDone ? Colors.grey : null, // 完了なら少し薄く
+                        color: task.isDone ? Colors.grey[600] : Theme.of(context).textTheme.bodyLarge?.color,
+                        fontSize: 16,
                       ),
-                    ),
-                    value: task.isDone,
-                    onChanged: (bool? value) {
-                      _toggleTaskDone(index);
-                    },
-                    controlAffinity: ListTileControlAffinity.leading, // チェックボックスを左側に
-                    activeColor: Theme.of(context).colorScheme.secondary, // チェック時の色
-                  );
-                },
-              ),
-            ),
-            // タスク追加入力部分
-            Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _taskController,
-                      decoration: InputDecoration(
-                        hintText: '新しいタスクを入力...',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20.0),
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 14.0),
-                      ),
-                      onSubmitted: (value) { // Enterキーで追加
-                        _addTask(value);
+                      keyboardType: TextInputType.multiline,
+                      maxLines: null,
+                      textInputAction: TextInputAction.newline,
+                      onChanged: (text) {
+                        if (text.endsWith('\n')) {
+                          final currentLineText = text.substring(0, text.length - 1);
+                          controller.text = currentLineText;
+                          if (mounted && index < _tasks.length) {
+                            _tasks[index].title = currentLineText.trim(); // setStateは不要、フォーカスアウトで更新
+                          }
+                          controller.selection = TextSelection.fromPosition(
+                            TextPosition(offset: controller.text.length),
+                          );
+                          _insertNewTaskAt(index + 1);
+                        }
+                      },
+                      onSubmitted: (value){
+                        // 通常のEnter（改行）はonChangedで処理されるので、
+                        // onSubmittedはソフトウェアキーボードの「完了」アクションなどで呼ばれる。
+                        // ここでは現在の行の値を確定し、もし次の行がなければ新しい行を追加する。
+                        if (mounted && index < _tasks.length) {
+                          _tasks[index].title = value.trim();
+                          controller.text = value.trim();
+                        }
+                        if (index == _tasks.length - 1) { // 最後のタスクで完了した場合
+                          _insertNewTaskAt(index + 1);
+                        } else if (index + 1 < _taskFocusNodes.length) {
+                          _taskFocusNodes[index + 1].requestFocus();
+                        }
                       },
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  ElevatedButton(
-                    onPressed: () {
-                      _addTask(_taskController.text);
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Theme.of(context).colorScheme.secondary,
-                      shape: const CircleBorder(),
-                      padding: const EdgeInsets.all(16),
+                    trailing: IconButton( // ReorderableListViewのデフォルトのドラッグハンドルと競合しないように注意
+                      icon: Icon(Icons.delete_outline, color: Colors.grey[600]),
+                      onPressed: () {
+                        _deleteTaskAt(index);
+                      },
                     ),
-                    child: const Icon(Icons.add, color: Colors.black), // アイコンの色を調整
-                  ),
-                ],
+                  );
+                },
+                onReorder: (oldIndex, newIndex) { // 並び替え処理
+                  setState(() {
+                    if (oldIndex < newIndex) {
+                      newIndex -= 1;
+                    }
+                    final Task item = _tasks.removeAt(oldIndex);
+                    _tasks.insert(newIndex, item);
+
+                    final TextEditingController controllerItem = _taskTextControllers.removeAt(oldIndex);
+                    _taskTextControllers.insert(newIndex, controllerItem);
+
+                    final FocusNode focusNodeItem = _taskFocusNodes.removeAt(oldIndex);
+                    _taskFocusNodes.insert(newIndex, focusNodeItem);
+                  });
+                },
               ),
             ),
           ],

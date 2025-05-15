@@ -1,21 +1,36 @@
-import 'task_model.dart'; // 作成したTaskモデルを読み込む
+import 'package:hive/hive.dart';
+import 'task_model.dart';
 
-class Project {
+part 'project_model.g.dart'; // ★ 生成されるファイルを指定
+
+@HiveType(typeId: 0) // ★ HiveTypeアノテーションとユニークなtypeId (Taskとは異なるもの)
+class Project extends HiveObject { // ★ HiveObjectを継承
+  @HiveField(0) // ★ HiveFieldアノテーションとユニークなインデックス
   String id;
+
+  @HiveField(1)
   String title;
-  List<Task> tasks; // Taskのリストを持つ
+
+  @HiveField(2)
+  List<Task> tasks; // Taskのリストも保存可能
+
+  @HiveField(3)
   DateTime createdAt;
+
+  @HiveField(4)
   bool isArchived;
+
+  // ★ Hiveがデフォルトコンストラクタを要求する場合があるため、引数なしコンストラクタも用意 (今回は不要かもしれないが念のため)
+  // Project();
 
   Project({
     required this.id,
     required this.title,
-    List<Task>? tasks, // ? をつけて、null許容にする
+    List<Task>? tasks,
     required this.createdAt,
-    this.isArchived = false, // デフォルトはアーカイブされていない
-  }) : tasks = tasks ?? []; // tasksがnullなら空のリストを代入
+    this.isArchived = false,
+  }) : tasks = tasks ?? [];
 
-  // タスクの進捗を計算するヘルパーメソッド (例)
   double get progress {
     if (tasks.isEmpty) {
       return 0.0;
@@ -24,7 +39,6 @@ class Project {
     return completedTasks / tasks.length;
   }
 
-  // 未完了のタスク数を取得するヘルパーメソッド
   int get unfinishedTaskCount {
     return tasks.where((task) => !task.isDone).length;
   }
